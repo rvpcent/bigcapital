@@ -1,5 +1,5 @@
 import mime from 'mime-types';
-import { Response, NextFunction, Request } from 'express';
+import { Response } from 'express';
 import {
   ApiBody,
   ApiConsumes,
@@ -28,7 +28,10 @@ import {
 } from './dtos/Attachment.dto';
 import { AttachmentsApplication } from './AttachmentsApplication';
 import { AttachmentUploadPipeline } from './S3UploadPipeline';
-import { FileInterceptor } from '@/common/interceptors/file.interceptor';
+import { FileInterceptor } from '@nestjs/platform-express'; // ✅ use Nest’s built-in one here
+import { diskStorage } from 'multer';
+import { extname } from 'path';
+import { v4 as uuidv4 } from 'uuid';
 import { ConfigService } from '@nestjs/config';
 import { ApiCommonHeaders } from '@/common/decorators/ApiCommonHeaders';
 
@@ -36,10 +39,6 @@ import { ApiCommonHeaders } from '@/common/decorators/ApiCommonHeaders';
 @Controller('/attachments')
 @ApiCommonHeaders()
 export class AttachmentsController {
-  /**
-   * @param {AttachmentsApplication} attachmentsApplication - Attachments application.
-   * @param uploadPipelineService
-   */
   constructor(
     private readonly attachmentsApplication: AttachmentsApplication,
     private readonly uploadPipelineService: AttachmentUploadPipeline,
@@ -51,7 +50,19 @@ export class AttachmentsController {
    */
   @Post()
   @HttpCode(200)
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: diskStorage({
+        destination: './uploads', // adjust if you use tmp or local staging folder
+        filename: (req, file, cb) => {
+          const ext = extname(file.originalname);
+          const key = `${uuidv4()}${ext}`;
+          file.key = key; // ✅ propagate full name with extension
+          cb(null, key);
+        },
+      }),
+    }),
+  )
   @ApiConsumes('multipart/form-data')
   @ApiOperation({ summary: 'Upload attachment to S3' })
   @ApiBody({ description: 'Upload attachment', type: UploadAttachmentDto })
@@ -67,9 +78,10 @@ export class AttachmentsController {
     if (!file) {
       throw new UnauthorizedException({
         errorType: 'FILE_UPLOAD_FAILED',
-        message: 'Now file uploaded.',
+        message: 'No file uploaded.',
       });
     }
+
     const data = await this.attachmentsApplication.upload(file);
 
     return {
@@ -91,7 +103,6 @@ export class AttachmentsController {
     @Param('id') documentId: string,
   ): Promise<Response | void> {
     const data = await this.attachmentsApplication.get(documentId);
-
     const byte = await data.Body.transformToByteArray();
     const extension = mime.extension(data.ContentType);
     const buffer = Buffer.from(byte);
@@ -101,9 +112,6 @@ export class AttachmentsController {
     res.send(buffer);
   }
 
-  /**
-   * Deletes the given document key.
-   */
   @Delete('/:id')
   @ApiOperation({ summary: 'Delete attachment by ID' })
   @ApiParam({ name: 'id', description: 'Attachment ID' })
@@ -116,21 +124,14 @@ export class AttachmentsController {
 
     return {
       status: 200,
-      message: 'The document has been delete successfully.',
+      message: 'The document has been deleted successfully.',
     };
   }
 
-  /**
-   * Links the given document key.
-   */
   @Post('/:id/link')
   @ApiOperation({ summary: 'Link attachment to a model' })
   @ApiParam({ name: 'id', description: 'Attachment ID' })
   @ApiBody({ type: LinkAttachmentDto })
-  @ApiResponse({
-    status: 200,
-    description: 'The document has been linked successfully',
-  })
   async linkDocument(
     @Body() linkDocumentDto: LinkAttachmentDto,
     @Param('id') documentId: string,
@@ -147,17 +148,10 @@ export class AttachmentsController {
     };
   }
 
-  /**
-   * Links the given document key.
-   */
   @Post('/:id/unlink')
   @ApiOperation({ summary: 'Unlink attachment from a model' })
   @ApiParam({ name: 'id', description: 'Attachment ID' })
   @ApiBody({ type: UnlinkAttachmentDto })
-  @ApiResponse({
-    status: 200,
-    description: 'The document has been unlinked successfully',
-  })
   async unlinkDocument(
     @Body() unlinkDto: UnlinkAttachmentDto,
     @Param('id') documentId: string,
@@ -170,20 +164,13 @@ export class AttachmentsController {
 
     return {
       status: 200,
-      message: 'The document has been linked successfully.',
+      message: 'The document has been unlinked successfully.',
     };
   }
 
-  /**
-   * Retreives the presigned url of the given attachment key.
-   */
   @Get('/:id/presigned-url')
   @ApiOperation({ summary: 'Get presigned URL for attachment' })
   @ApiParam({ name: 'id', description: 'Attachment ID' })
-  @ApiResponse({
-    status: 200,
-    description: 'Returns the presigned URL for the attachment',
-  })
   async getAttachmentPresignedUrl(@Param('id') documentKey: string) {
     const presignedUrl =
       await this.attachmentsApplication.getPresignedUrl(documentKey);
